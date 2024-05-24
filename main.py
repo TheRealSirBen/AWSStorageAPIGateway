@@ -38,7 +38,6 @@ aws_session = Session(
 )
 
 ENCRYPTION_KEY = environ.get('FILE_ENCRYPTION_KEY')
-DATABASE_NAME = environ.get('APP_NAME')
 COLLECTION_NAME = environ.get('MONGO_DB_APP_COLLECTION')
 
 
@@ -121,24 +120,34 @@ async def bucket_contents(bucket_name: str, s3_session):
 
 
 async def check_bucket_file(bucket_name: str, file_name: str, s3_session):
-    check, check_message, check_status = await check_bucket(bucket_name, s3_session)
-    if check:
+    _check_bucket, _check_bucket_status, _check_bucket_message = await check_bucket(bucket_name, s3_session)
+
+    # When bucket exists
+    if _check_bucket_status == 200:
         contents_data: list[dict] = await bucket_contents(bucket_name, s3_session)
         file_in_list = [content for content in contents_data if content.get('name') == file_name]
 
+        message = str()
         # When file has been found
         if len(file_in_list) > 0:
-            return True
+            message = 'file {} exists'.format(file_name)
+            return True, status.HTTP_200_OK, message
 
         # When file has not been found
-        return False
+        return False, status.HTTP_404_NOT_FOUND, message
+
+    # When bucket does not exist
+    if _check_bucket_status == 404:
+        return _check_bucket, status.HTTP_428_PRECONDITION_REQUIRED, _check_bucket_message
 
 
-async def upload_to_bucket(bucket_name: str, file_path, file_name: str, s3_session):
+async def upload_to_bucket(bucket_name: str, file_path, file_name: str, app_name: str, s3_session):
     # Create file bytes
     with open(file_path, 'rb') as file:
         file_data = file.read()
     file.close()
+
+    info('Bucket name: {}'.format(bucket_name))
 
     response: dict = s3_session.put_object(
         Body=file_data, Bucket=bucket_name, Key=file_name
@@ -149,18 +158,18 @@ async def upload_to_bucket(bucket_name: str, file_path, file_name: str, s3_sessi
     new_file_record_id: str = str()
     if response_status == 200:
         new_file_record = {'file_name': file_name}
-        record_id = await insert_record(DATABASE_NAME, COLLECTION_NAME, new_file_record)
+        record_id = await insert_record(app_name, COLLECTION_NAME, new_file_record)
         new_file_record_id = encrypt(record_id, ENCRYPTION_KEY)
         return new_file_record_id, response_status
 
     return new_file_record_id, response_status
 
 
-async def get_file_name_by_id(file_id: str):
+async def get_file_name_by_id(file_id: str, app_name: str):
     decrypted_file_id = decrypt(file_id, ENCRYPTION_KEY)
     info(decrypted_file_id)
     filter_query = {'_id': ObjectId(decrypted_file_id)}
-    record_data = await get_record(DATABASE_NAME, COLLECTION_NAME, filter_query)
+    record_data = await get_record(app_name, COLLECTION_NAME, filter_query)
 
     if record_data:
         return record_data.get('file_name')
@@ -236,9 +245,9 @@ async def get_bucket_contents(bucket_name: str, region_name: str, resp: Response
 
 
 @app.get("/get-file-details/{bucket_name}/{file_id}")
-async def get_file_content_contents(bucket_name: str, region_name: str, file_id: str):
+async def get_file_content_contents(bucket_name: str, region_name: str, file_id: str, app_name: str):
     s3_session = await aws_s3_session(region_name)
-    file_name = await get_file_name_by_id(file_id)
+    file_name = await get_file_name_by_id(file_id, app_name)
 
     # When file name has been retrieved
     if file_name:
@@ -315,22 +324,27 @@ async def add_new_bucket(bucket: Bucket, resp: Response):
 
 @app.post('/upload', status_code=status.HTTP_201_CREATED)
 async def upload_file(bucket_name: Annotated[str, Form()], region_name: Annotated[str, Form()],
-                      file_name: Annotated[str, Form()], file: Annotated[UploadFile, File()]):
+                      file_name: Annotated[str, Form()], app_name: Annotated[str, Form()],
+                      file: Annotated[UploadFile, File()], resp: Response):
     # Create session
     s3_session = await aws_s3_session(region_name)
 
     # Check if bucket exists
-    check = await check_bucket_file(
+    _check_bucket_file, _check_bucket_file_status, _check_bucket_file_message = await check_bucket_file(
         bucket_name, file_name, s3_session
     )
 
+    if _check_bucket_file_status != 404:
+        resp.status_code = _check_bucket_file_status
+        return {'message': _check_bucket_file_message}
+
     # When file does not exist
-    if not check:
+    if _check_bucket_file_status == 404:
         # Prepare file name
         formatted_file_name, file_extension = prepare_file_name(file_name)
 
         # Save file to directory
-        app_dir_name = environ.get('APP_NAME')
+        app_dir_name = 'app_dir_{}'.format(app_name)
         makedirs(app_dir_name, exist_ok=True)
         temporary_file_name = generate_temporary_filename(file_extension)
         file_path = "{}/{}".format(app_dir_name, temporary_file_name)
@@ -343,7 +357,9 @@ async def upload_file(bucket_name: Annotated[str, Form()], region_name: Annotate
 
         f.close()
 
-        upload_record_id, upload_response_status = await upload_to_bucket(bucket_name, file_path, file_name, s3_session)
+        upload_record_id, upload_response_status = await upload_to_bucket(
+            bucket_name, file_path, file_name, app_name, s3_session
+        )
 
         # When upload was successful
         if upload_response_status == 200:
