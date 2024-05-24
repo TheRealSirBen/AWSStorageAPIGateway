@@ -1,0 +1,11 @@
+# ignore ALL .log files
+*.log
+.env_dev
+# ignore ALL files in ANY directory named venv, .deta, .idea
+venv/
+.idea/
+
+# ignore ALL files in ANY directory named __pycache__
+**/__pycache__/
+temp/
+tests/
