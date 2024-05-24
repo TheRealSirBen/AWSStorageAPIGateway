@@ -36,7 +36,7 @@ async def ping_db() -> str:
         # Send a ping to confirm a successful connection
         try:
             client.admin.command('ping')
-            info("Pinged your deployment. You successfully connected to MongoDB!")
+            info("Pinged your deployment. You successfully connected to Database!")
             return 'pong!'
         except Exception as e:
             info(e)
