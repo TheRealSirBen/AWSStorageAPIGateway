@@ -262,9 +262,9 @@ async def get_file_content_contents(bucket_name: str, region_name: str, file_id:
 
 
 @app.get("/download/{bucket_name}/{file_id}")
-async def download_file(bucket_name: str, file_id: str, region_name: str):
+async def download_file(bucket_name: str, file_id: str, region_name: str, app_name: str):
     s3_session = await aws_s3_session(region_name)
-    file_name = await get_file_name_by_id(file_id)
+    file_name = await get_file_name_by_id(file_id, app_name)
     check, check_status, check_message = await check_bucket(bucket_name, s3_session)
 
     # When bucket exists
