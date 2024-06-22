@@ -17,6 +17,7 @@ from database import ping_db
 from database import insert_record
 from database import get_record
 
+from helper import log_function_call
 from helper import generate_temporary_filename
 from helper import prepare_file_name
 from helper import encrypt
@@ -50,6 +51,7 @@ async def get_response_status(response: dict):
     return response_meta_data.get('HTTPStatusCode')
 
 
+@log_function_call
 async def check_bucket(bucket_name: str, s3_session):
     """
     :param bucket_name:
@@ -57,7 +59,6 @@ async def check_bucket(bucket_name: str, s3_session):
     :return: [, , 200|206|404|400]
     """
 
-    info('Bucket check start')
     message: str = str()
     try:
         response: dict = s3_session.head_bucket(Bucket=bucket_name)
@@ -86,6 +87,7 @@ async def check_bucket(bucket_name: str, s3_session):
         return False, status.HTTP_400_BAD_REQUEST, message
 
 
+@log_function_call
 async def list_buckets(s3_session):
     message: str = str()
     buckets: list = list()
@@ -101,6 +103,7 @@ async def list_buckets(s3_session):
         return status.HTTP_400_BAD_REQUEST, buckets, message
 
 
+@log_function_call
 async def bucket_contents(bucket_name: str, s3_session):
     response: dict = s3_session.list_objects_v2(Bucket=bucket_name)
     response_status = await get_response_status(response)
@@ -119,6 +122,7 @@ async def bucket_contents(bucket_name: str, s3_session):
         return contents
 
 
+@log_function_call
 async def check_bucket_file(bucket_name: str, file_name: str, s3_session):
     _check_bucket, _check_bucket_status, _check_bucket_message = await check_bucket(bucket_name, s3_session)
 
@@ -127,13 +131,13 @@ async def check_bucket_file(bucket_name: str, file_name: str, s3_session):
         contents_data: list[dict] = await bucket_contents(bucket_name, s3_session)
         file_in_list = [content for content in contents_data if content.get('name') == file_name]
 
-        message = str()
         # When file has been found
         if len(file_in_list) > 0:
             message = 'file {} exists'.format(file_name)
             return True, status.HTTP_200_OK, message
 
         # When file has not been found
+        message = 'File does not exist!'
         return False, status.HTTP_404_NOT_FOUND, message
 
     # When bucket does not exist
@@ -141,13 +145,12 @@ async def check_bucket_file(bucket_name: str, file_name: str, s3_session):
         return _check_bucket, status.HTTP_428_PRECONDITION_REQUIRED, _check_bucket_message
 
 
+@log_function_call
 async def upload_to_bucket(bucket_name: str, file_path, file_name: str, app_name: str, s3_session):
     # Create file bytes
     with open(file_path, 'rb') as file:
         file_data = file.read()
     file.close()
-
-    info('Bucket name: {}'.format(bucket_name))
 
     response: dict = s3_session.put_object(
         Body=file_data, Bucket=bucket_name, Key=file_name
@@ -165,16 +168,19 @@ async def upload_to_bucket(bucket_name: str, file_path, file_name: str, app_name
     return new_file_record_id, response_status
 
 
+@log_function_call
 async def get_file_name_by_id(file_id: str, app_name: str):
     decrypted_file_id = decrypt(file_id, ENCRYPTION_KEY)
-    info(decrypted_file_id)
     filter_query = {'_id': ObjectId(decrypted_file_id)}
     record_data = await get_record(app_name, COLLECTION_NAME, filter_query)
 
     if record_data:
         return record_data.get('file_name')
 
+    return None
 
+
+@log_function_call
 async def download_from_bucket(bucket_name: str, file_name: str, s3_session) -> tuple[str, str, str]:
     temp_dir = environ.get('TEMP_DIR')
     _, file_extension = prepare_file_name(file_name)
@@ -182,6 +188,15 @@ async def download_from_bucket(bucket_name: str, file_name: str, s3_session) -> 
     local_file_path = '{}/{}'.format(temp_dir, local_file_name)
     s3_session.download_file(bucket_name, file_name, local_file_path)
     return local_file_path, local_file_name, file_extension
+
+
+@log_function_call
+async def delete_from_bucket(bucket_name: str, file_name: str, s3_session):
+    response = s3_session.delete_object(Bucket=bucket_name, Key=file_name)
+    response_status = await get_response_status(response)
+
+    if response_status == 204:
+        return response_status, response
 
 
 #
@@ -325,7 +340,7 @@ async def add_new_bucket(bucket: Bucket, resp: Response):
 @app.post('/upload', status_code=status.HTTP_201_CREATED)
 async def upload_file(bucket_name: Annotated[str, Form()], region_name: Annotated[str, Form()],
                       file_name: Annotated[str, Form()], app_name: Annotated[str, Form()],
-                      file: Annotated[UploadFile, File()], resp: Response):
+                      overwrite: Annotated[bool, Form()], file: Annotated[UploadFile, File()], resp: Response):
     # Create session
     s3_session = await aws_s3_session(region_name)
 
@@ -334,12 +349,8 @@ async def upload_file(bucket_name: Annotated[str, Form()], region_name: Annotate
         bucket_name, file_name, s3_session
     )
 
-    if _check_bucket_file_status != 404:
-        resp.status_code = _check_bucket_file_status
-        return {'message': _check_bucket_file_message}
-
     # When file does not exist
-    if _check_bucket_file_status == 404:
+    if (_check_bucket_file_status == 404) or (_check_bucket_file_status == 200 and overwrite):
         # Prepare file name
         formatted_file_name, file_extension = prepare_file_name(file_name)
 
@@ -365,8 +376,12 @@ async def upload_file(bucket_name: Annotated[str, Form()], region_name: Annotate
         if upload_response_status == 200:
             return {'message': 'Upload successful', 'data': upload_record_id}
 
+    if _check_bucket_file_status != 404:
+        resp.status_code = _check_bucket_file_status
+        return {'message': _check_bucket_file_message}
 
-@app.delete('/delete/{bucket_name}')
+
+@app.delete('/delete-bucket/{bucket_name}')
 async def delete_bucket(bucket_name: str, region_name: str, resp: Response):
     # Create session
     s3_session = await aws_s3_session(region_name)
@@ -384,3 +399,32 @@ async def delete_bucket(bucket_name: str, region_name: str, resp: Response):
         if response_status == 204:
             resp.status_code = status.HTTP_200_OK
             return {'message': 'Bucket successfully deleted!'}
+
+
+@app.delete('/delete-file/{bucket_name}', status_code=status.HTTP_200_OK)
+async def delete_file(bucket_name: str, file_name: str, region_name: str, app_name: str, resp: Response):
+    # Create session
+    s3_session = await aws_s3_session(region_name)
+
+    # Get cloud file name
+    decrypted_file_name = await get_file_name_by_id(file_name, app_name)
+
+    # If file decryption failed
+    if not decrypted_file_name:
+        resp.status_code = status.HTTP_404_NOT_FOUND
+        return {'message': 'File does not exist!'}
+
+    # Check if file exists
+    _check_bucket_file, _check_bucket_file_status, _check_bucket_file_message = await check_bucket_file(
+        bucket_name, decrypted_file_name, s3_session
+    )
+
+    if _check_bucket_file_status != 200:
+        resp.status_code = _check_bucket_file_status
+        return {'message': _check_bucket_file_message}
+
+    if _check_bucket_file_status == 200:
+        delete_status, delete_response = await delete_from_bucket(bucket_name, decrypted_file_name, s3_session)
+
+        if delete_status == 204:
+            return {'message': 'File successfully deleted!'}

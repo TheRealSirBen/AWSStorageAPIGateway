@@ -1,13 +1,14 @@
-import os
-
 from dotenv import load_dotenv
 from logging import basicConfig
+from logging import getLogger
+from logging import CRITICAL
 from logging import INFO
 from sys import stdout
 from os.path import exists
 from os import environ
 from os import makedirs
 
+getLogger('pymongo').setLevel(CRITICAL)
 basicConfig(stream=stdout, level=INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 

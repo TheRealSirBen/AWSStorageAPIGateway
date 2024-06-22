@@ -1,8 +1,29 @@
 import string
 from uuid import uuid4
+from json import load
+from functools import wraps
+from logging import info
 
 KEY_SALT_SPACE = ' ' + string.ascii_letters + string.punctuation + string.digits
 KEY_SPACE = string.ascii_letters + string.digits
+with open('mimetype.json') as mimetype_file:
+    MIMETYPE = load(mimetype_file)
+    mimetype_file.close()
+
+
+def log_function_call(func):
+    """
+    A wrapper function that logs when the program passes through a function.
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        info("Run function {} start".format(func.__name__))
+        result = func(*args, **kwargs)
+        info("Run function {} end".format(func.__name__))
+        return result
+
+    return wrapper
 
 
 def generate_temporary_filename(file_extension: str):
@@ -16,13 +37,7 @@ def prepare_file_name(filename: str) -> tuple[str, str]:
 
 
 def get_file_media_type(file_extension: str) -> str:
-    collection = {
-        'jpg': 'image/jpeg',
-        'png': 'image/png',
-        'jpeg': 'image/jpeg',
-        'gif': 'image/gif',
-    }
-    return collection.get(file_extension)
+    return MIMETYPE.get(file_extension)
 
 
 def key_position_match(index: int, space_length: int):
